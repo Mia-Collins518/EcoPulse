@@ -1,43 +1,43 @@
 import torch
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter # Currently not utilized in code, planning on revamping the way I track the data, will change in future. 
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torchvision.transforms import ToTensor
-from model import NeuralNetwork
+from CNN import NeuralNetwork, get_name
+from utils import save_checkpoint, load_checkpoint_training
+import os 
 
 # Hyper parameters
 batch_size = 50
-epochs = 5
+epochs = 2
+learn_rate = 1e-3
 
-# Download training data from open datasets.
-training_data = datasets.MNIST(
-   root="data",
-   train=True,
-   download=True,
-   transform=ToTensor(),
-)
+# Saving/Loading Parameters (Customizable functionaility based on the following variables)
+resume_training = True # False = Start training a new model, True = resume training on an existing model by loading it's data
+save_checkpoint_num = 1 # Defines how often to save models (to avoid overwhelm). 0 = off (no saving at all)
+model_name = get_name() # Gets the name of the model script
 
-# Create data loader.
-train_dataloader = DataLoader(training_data, batch_size=batch_size)
+# This defines the iteration of the training script, allowing seemless saving capabilities as I improve the training method (change 1.0 to higher version indicators)
+train_version = f"{os.path.splitext(os.path.basename(__file__))[0]}1.0"
+
+# Add project variable
+project = "test3"  # Customize this for specific projects
+project_dir = os.path.join("checkpoints", project)  # Creates project-specific checkpoint directory in the checkpoints directory
+
+load_checkpoint_path = os.path.join(project_dir, "best_model.pth.tar") # Default is project_dir/best_model.pth.tar to load best model, but any existing model can be loaded
+
 
 # If an accelerator is available, it will be used, else the CPU will be used.
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Initalize model, loss function, optimizer.
-model = NeuralNetwork().to(device)
-loss_fn = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
-
-# TensorBoard writer
-writer = SummaryWriter()
-
 # Training function
-def train(dataloader, model, loss_fn, optimizer, epoch):
+def train(dataloader, model, loss_fn, optimizer, epoch, initial_loss=0.0, initial_accuracy=0.0):
     size = len(dataloader.dataset)
     model.train()
-    total_loss = 0.0
-    total_accuracy = 0.0
+    total_loss = initial_loss
+    total_accuracy = initial_accuracy
+
     for batch, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
 
@@ -51,12 +51,8 @@ def train(dataloader, model, loss_fn, optimizer, epoch):
         optimizer.zero_grad()
 
         total_loss += loss.item()
-
-        # Calculate accuracy manually
-        _, predicted = torch.max(pred, 1)  # Get the index of the max log-probability
-        correct = (predicted == y).sum().item()
-        accuracy = correct / len(y)
-        total_accuracy += accuracy
+        _, predicted = torch.max(pred, 1)
+        total_accuracy += (predicted == y).sum().item() / y.size(0)
 
         # Log loss every 100 batches
         if batch % 100 == 0:
@@ -65,21 +61,66 @@ def train(dataloader, model, loss_fn, optimizer, epoch):
 
     # Log the average loss and accuracy for the epoch
     avg_loss = total_loss / len(dataloader)
-    avg_accuracy = total_accuracy / len(dataloader)
+    avg_accuracy = (total_accuracy / len(dataloader))*100
+    return avg_loss, avg_accuracy
+
     writer.add_scalar('Loss/train', avg_loss, epoch)
     writer.add_scalar('Accuracy/train', avg_accuracy, epoch)
 
-# Main Training Loop
-for t in range(epochs):
-    print(f"Epoch {t+1}\n-------------------------------")
-    train(train_dataloader, model, loss_fn, optimizer, t+1)
+def training_loop(model, optimizer, loss_fn, train_dataloader, epochs, start_epoch, avg_loss=0.0, avg_accuracy=0.0):
+    for epoch in range(start_epoch, epochs):
+        # Epoch logging uses 1-indexing for readability
+        display_epoch = epoch + 1
+        print(f"\nEpoch {display_epoch}\n-------------------------------")
+        
+        # Train the model for the current epoch
+        avg_loss, avg_accuracy = train(train_dataloader, model, loss_fn, optimizer, display_epoch)
+        print(f"Epoch {display_epoch} Summary: Loss: {avg_loss:.4f}, Accuracy: {avg_accuracy:.4f}%")
+        
+        # if save_checkpoint_num var is 0, there will be no saving at all.
+        if save_checkpoint_num != 0:
+            # Save Model Weights every 5 epochs
+            if display_epoch % save_checkpoint_num == 0:
+                save_checkpoint(display_epoch, model, optimizer, avg_loss, avg_accuracy, model_name, train_version, project_dir)
 
-print("Training Complete!")
-writer.flush()
+if __name__ == "__main__":
+    # Initalize model, loss function, optimizer.
+    model = NeuralNetwork().to(device)
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=learn_rate)
 
-# Save Model Weights
-torch.save(model.state_dict(), "model_weights.pth")
-print("Saved PyTorch Model State to model_weights.pth")
+    # Download training data from open datasets.
+    training_data = datasets.MNIST(
+    root="data",
+    train=True,
+    download=True,
+    transform=ToTensor(),
+    )
 
-# Close the TensorBoard writer
-writer.close()
+    # Create data loader.
+    train_dataloader = DataLoader(training_data, batch_size=batch_size)
+
+    # Intailizing loadable variables
+    start_epoch = 0
+    initial_loss = 0.0
+    initial_accuracy = 0.0
+
+    # Throws an error if resume training is on but a new project directory is being saved to
+    if (resume_training == True) & (os.path.exists(project_dir) == False):
+        raise Exception("Resume training impossible with current settings, change the resume_training or epochs variable")
+
+
+    # Resume training if enabled
+    if resume_training == True:
+        # Loads epoch, loss, and accuracy from checkpoint
+        load_epoch, load_loss, load_acc = load_checkpoint_training(model, optimizer, load_checkpoint_path, device)
+
+        # Throws an error if the epochs variable is lesss then or equal to the existing training epoch
+        if load_epoch >= epochs:
+            raise ValueError("Epochs variable too small to continue training.")
+
+        start_epoch = load_epoch
+        print(f"Resuming training from epoch {start_epoch}...")
+
+    # Main Training Loop
+    training_loop(model, optimizer, loss_fn, train_dataloader, epochs, start_epoch, initial_loss, initial_accuracy)
