@@ -1,28 +1,31 @@
 import torch
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter # Currently not utilized in code, planning on revamping the way I track the data, will change in future. 
+from tensorboardX import SummaryWriter # Currently not utilized in code, planning on revamping the way I track the data, will change in future. 
 from torch.utils.data import DataLoader
 from torchvision import datasets
 from torchvision.transforms import ToTensor
 from CNN import NeuralNetwork, get_name
-from utils import save_checkpoint, load_checkpoint_training
+from checkpoint_utils import save_checkpoint, load_checkpoint_training
+from visuals import get_tensorboard_writer, log_training_metrics, log_time, flops_to_energy
 import os 
+from ptflops import get_model_complexity_info
+import time
 
 # Hyper parameters
 batch_size = 50
-epochs = 2
+epochs = 35
 learn_rate = 1e-3
 
 # Saving/Loading Parameters (Customizable functionaility based on the following variables)
 resume_training = True # False = Start training a new model, True = resume training on an existing model by loading it's data
-save_checkpoint_num = 1 # Defines how often to save models (to avoid overwhelm). 0 = off (no saving at all)
+save_checkpoint_num = 5 # Defines how often to save models (to avoid overwhelm). 0 = off (no saving at all)
 model_name = get_name() # Gets the name of the model script
 
 # This defines the iteration of the training script, allowing seemless saving capabilities as I improve the training method (change 1.0 to higher version indicators)
 train_version = f"{os.path.splitext(os.path.basename(__file__))[0]}1.0"
 
 # Add project variable
-project = "test3"  # Customize this for specific projects
+project = "test_2"  # Customize this for specific projects
 project_dir = os.path.join("checkpoints", project)  # Creates project-specific checkpoint directory in the checkpoints directory
 
 load_checkpoint_path = os.path.join(project_dir, "best_model.pth.tar") # Default is project_dir/best_model.pth.tar to load best model, but any existing model can be loaded
@@ -64,9 +67,6 @@ def train(dataloader, model, loss_fn, optimizer, epoch, initial_loss=0.0, initia
     avg_accuracy = (total_accuracy / len(dataloader))*100
     return avg_loss, avg_accuracy
 
-    writer.add_scalar('Loss/train', avg_loss, epoch)
-    writer.add_scalar('Accuracy/train', avg_accuracy, epoch)
-
 def training_loop(model, optimizer, loss_fn, train_dataloader, epochs, start_epoch, avg_loss=0.0, avg_accuracy=0.0):
     for epoch in range(start_epoch, epochs):
         # Epoch logging uses 1-indexing for readability
@@ -77,6 +77,11 @@ def training_loop(model, optimizer, loss_fn, train_dataloader, epochs, start_epo
         avg_loss, avg_accuracy = train(train_dataloader, model, loss_fn, optimizer, display_epoch)
         print(f"Epoch {display_epoch} Summary: Loss: {avg_loss:.4f}, Accuracy: {avg_accuracy:.4f}%")
         
+        log_training_metrics(writer, epoch, avg_loss, avg_accuracy)
+
+        elapsed = time.time() - start_time
+        log_time(writer, elapsed, epoch)
+
         # if save_checkpoint_num var is 0, there will be no saving at all.
         if save_checkpoint_num != 0:
             # Save Model Weights every 5 epochs
@@ -89,11 +94,26 @@ if __name__ == "__main__":
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=learn_rate)
 
+    writer = get_tensorboard_writer(project) # create a tensorboard writer
+    macs, params = get_model_complexity_info(model, (1, 28, 28), as_strings=False) # Gets MACs and parameters from 1 grayscale image of 28x28 size (MNIST digit)
+    
+    # static model metadata (epoch 0)
+    writer.add_scalar("FLOPs/model", (macs*2), 0)
+    writer.add_scalar("Parameters/model", params, 0)
+
+    # energy both in joules and kWh
+    joules, kwh = flops_to_energy(macs)
+    #writer.add_scalar("Energy/train_joules", joules, 0)
+    writer.add_scalar("Energy/train_kwh",   kwh,    0)
+
+    # learning rate as a static scalar
+    writer.add_scalar("Hyperparams/learning_rate", learn_rate, 0)
+    
     # Download training data from open datasets.
     training_data = datasets.MNIST(
     root="data",
     train=True,
-    download=True,
+    download=False,
     transform=ToTensor(),
     )
 
@@ -102,6 +122,7 @@ if __name__ == "__main__":
 
     # Intailizing loadable variables
     start_epoch = 0
+    start_time = time.time()
     initial_loss = 0.0
     initial_accuracy = 0.0
 

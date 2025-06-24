@@ -7,7 +7,7 @@ from CNN import NeuralNetwork
 import random
 import numpy as np
 import os
-from utils import load_checkpoint_for_inferece
+from checkpoint_utils import load_checkpoint_for_inferece
 
 digets = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] # For output
 batch_size = 50 # For controling the data loader
@@ -16,7 +16,7 @@ batch_size = 50 # For controling the data loader
 test_data = datasets.MNIST(root="data", train=False, download=True, transform=ToTensor())
 
 # Add project variable
-project = "test_project"  # Same project name as in train.py
+project = "main"  # Same project name as in train.py
 project_dir = os.path.join("checkpoints", project)
 
 # Create data loader. 
