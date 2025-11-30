@@ -1,0 +1,11 @@
+# Python
+/backend/__pycache__/
+/model_src/__pycache__/
+/model_src/.venv/
+/**/*.pyc
+
+# Data & artifacts
+/data
+/model_src/checkpoints/
+npn/backend/data/metrics_csv/
+/**/*.tfevents*
