@@ -1,11 +1,39 @@
-# Python
-/backend/__pycache__/
-/model_src/__pycache__/
-/model_src/.venv/
-/**/*.pyc
+# --- General Operating System Files ---
+.DS_Store
 
-# Data & artifacts
-/data
-/model_src/checkpoints/
-npn/backend/data/metrics_csv/
+# --- Python & Virtual Environments ---
+# Python bytecode files
+__pycache__/
+*.pyc
+
+# Virtual Environment directory (Recommended: only at project root)
+.venv/
+/model_src/.venv/
+
+# --- PyTorch/ML Artifacts ---
+# Training logs and TensorBoard event files
+/runs/
+/model_src/runs/
 /**/*.tfevents*
+
+# Checkpoints (Ignore all model weights/artifacts)
+/checkpoints/
+/model_src/checkpoints/
+*.pth.tar
+*.pt
+
+# --- Data and Metrics ---
+# Raw or processed datasets (Downloaded or large data)
+/data/
+/model_src/data/
+
+# Generated CSVs from tfevents (Generated and easily recreated)
+/backend/data/metrics_csv/
+
+# --- Node/Next.js (Frontend) Artifacts ---
+/frontend/node_modules
+/frontend/.next
+/frontend/out
+npm-debug.log*
+yarn-debug.log*
+.env.local
