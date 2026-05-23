@@ -124,24 +124,66 @@ class InferenceResponse(BaseModel):
     predicted: int
     image: str   # the processed 28×28 PNG returned as data URL
 
+
+def preprocess_gray(gray: np.ndarray) -> np.ndarray:
+    """Return a 28×28 uint8 array: white digit on black background (MNIST format)."""
+    # Sample border pixels to determine background lightness
+    border = np.concatenate([
+        gray[:4, :].ravel(), gray[-4:, :].ravel(),
+        gray[:, :4].ravel(), gray[:, -4:].ravel(),
+    ])
+    bg_is_light = float(np.mean(border)) > 127.0
+
+    # Binarize with Otsu; invert only when background is bright
+    flag = cv2.THRESH_BINARY_INV if bg_is_light else cv2.THRESH_BINARY
+    _, binary = cv2.threshold(gray, 0, 255, flag | cv2.THRESH_OTSU)
+
+    # Remove small noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    clean = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+    # Crop to digit bounding box
+    coords = cv2.findNonZero(clean)
+    if coords is None:
+        raise HTTPException(400, detail="No digit found in image")
+    x, y, w, h = cv2.boundingRect(coords)
+    digit = clean[y:y + h, x:x + w]
+
+    # Scale so the longest side fits in a 20px box (4px padding each side = 28px total)
+    # This matches the MNIST normalization convention
+    box = 20
+    scale = box / max(w, h)
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    resized = cv2.resize(digit, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # Re-binarize after anti-aliased resize
+    _, resized = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+
+    # Center on a 28×28 black canvas
+    canvas = np.zeros((28, 28), dtype=np.uint8)
+    x_off = (28 - new_w) // 2
+    y_off = (28 - new_h) // 2
+    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+
+    return canvas
+
+
 @app.post(
     "/api/custom-inference",
     response_model=InferenceResponse,
     summary="Run inference on an uploaded image",
 )
 def custom_inference(req: InferenceRequest):
-    # 1) Strip off the "data:image/...;base64," prefix
+    # Strip the "data:image/...;base64," prefix
     try:
         header, b64data = req.image.split(",", 1)
     except ValueError:
         raise HTTPException(400, detail="Invalid data URL")
 
-    # 2) Base64 → raw bytes
     raw = base64.b64decode(b64data)
 
-    # 3) Decode to a grayscale NumPy array:
+    # Decode to grayscale — unified path for HEIC and all other formats
     if "heic" in header or "heif" in header:
-        # PIL knows how to open HEIC now that we registered the opener
         pil_img = Image.open(BytesIO(raw)).convert("L")
         gray = np.array(pil_img)
     else:
@@ -150,60 +192,15 @@ def custom_inference(req: InferenceRequest):
         if gray is None:
             raise HTTPException(400, detail="Could not decode image")
 
-        # 4) Binarize & clean: white digit on black
-    _, thresh = cv2.threshold(gray, 0, 255,
-                              cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-    # remove small speckles
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2,2))
-    clean = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    final = preprocess_gray(gray)
 
-    # 5) Find the digit’s bounding box on the CLEAN mask
-    coords = cv2.findNonZero(clean)
-    if coords is None:
-        raise HTTPException(400, detail="No digit found")
-    x, y, w, h = cv2.boundingRect(coords)
-
-    # 6) Crop the mask itself
-    digit_mask = clean[y:y+h, x:x+w]
-
-    # 7) scale so the *largest* side fills 28px **
-    # desired padding
-    pad = 2
-    # maximum box size for the digit itself
-    box = 28 - 2*pad    # = 24px
-
-    max_dim = max(w, h)
-    scale    = box / max_dim
-    new_w    = int(w * scale)
-    new_h    = int(h * scale)
-
-    digit_resized = cv2.resize(
-        digit_mask,
-        (new_w, new_h),
-        interpolation=cv2.INTER_NEAREST
-    )
-
-    # 8) Center in a 28×28 BLACK canvas
-    canvas = np.zeros((28,28), dtype=np.uint8)
-    x_off = (28 - new_w)//2
-    y_off = (28 - new_h)//2
-    canvas[y_off:y_off+new_h, x_off:x_off+new_w] = digit_resized
-
-    # ---- from here on, 'canvas' is your final 28×28 mask ----
-    final = canvas  # white digit (255) on black (0)
-
-    # 7) Normalize → tensor & run model
     tensor = torch.from_numpy(final.astype(np.float32) / 255.0) \
                    .unsqueeze(0).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         logits = model(tensor)
         pred = int(logits.argmax(dim=1)[0])
 
-    # 8) Re-encode 28×28 PNG for the frontend
     _, png = cv2.imencode(".png", final)
-    data_url = (
-      "data:image/png;base64," +
-      base64.b64encode(png.tobytes()).decode("ascii")
-    )
+    data_url = "data:image/png;base64," + base64.b64encode(png.tobytes()).decode("ascii")
 
     return InferenceResponse(predicted=pred, image=data_url)
